@@ -6,19 +6,25 @@
 # invokes this with the exact same argv it would give real yt-dlp.
 #
 # If scripts/ytdl_prefetch.lua has already resolved this same request in
-# the background while the previous playlist item was still playing (see
-# there for the matching cache-key computation), and the result is still
-# fresh, this serves it instantly instead of spawning a real yt-dlp
-# subprocess - that's the entire speedup. Any other case (nothing
-# prefetched, a stale entry, a still-in-progress write) falls straight
-# through to a real yt-dlp call, i.e. today's exact behavior with zero
-# regression risk.
+# the background - it prefetches both playlist neighbors of whatever's
+# currently playing, immediately on file-load (see there for the matching
+# cache-key computation) - and the result is still fresh, this serves it
+# instantly instead of spawning a real yt-dlp subprocess - that's the
+# entire speedup. Any other case (nothing prefetched, a stale entry, a
+# still-in-progress write) falls straight through to a real yt-dlp call,
+# i.e. today's exact behavior with zero regression risk.
 #
 # Requires yt-dlp itself to be reachable - see REAL_YTDL below.
 set -eu
 
 CACHE_DIR="${YTDL_PREFETCH_CACHE_DIR:-$HOME/.cache/mpv/ytdl-prefetch}"
-TTL_MINUTES="${YTDL_PREFETCH_TTL_MINUTES:-20}"
+# Prefetches happen immediately on file-load, not just shortly before
+# they're needed, so this has to comfortably outlast how long a video
+# might play before the user actually skips - real YouTube stream URLs
+# stay valid for about 6 hours, so this has a lot of room without any
+# real risk of serving an expired one. Must match
+# scripts/ytdl_prefetch.lua's own ttl_minutes default.
+TTL_MINUTES="${YTDL_PREFETCH_TTL_MINUTES:-60}"
 REAL_YTDL="${YTDL_PREFETCH_REAL_YTDL:-yt-dlp}"
 
 # Cache key: a checksum of the FULL argument list (not just the URL),

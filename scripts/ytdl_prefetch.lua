@@ -1,8 +1,8 @@
--- ytdl-prefetch: resolves the next playlist item's yt-dlp JSON in the
--- background while the current item is still playing, so the visible gap
--- between one video ending and the next starting shrinks from a full
--- yt-dlp resolution (page fetch + signature decipher + format pick) down
--- to just reading a cached file.
+-- ytdl-prefetch: resolves both adjacent playlist items' yt-dlp JSON in
+-- the background while the current item is playing, so jumping to either
+-- one - forward or backward, at any point during playback, not just near
+-- the end - shrinks from a full yt-dlp resolution (page fetch + signature
+-- decipher + format pick) down to just reading a cached file.
 --
 -- This script's only job is populating that cache ahead of time -
 -- bin/ytdl-cache-wrapper (set as mpv's ytdl_path, see
@@ -19,15 +19,20 @@ local msg = require "mp.msg"
 
 local opts = {
     enabled = true,
-    -- How many seconds of the current file must remain before the next
-    -- item gets prefetched. Comfortably more than a yt-dlp resolution
-    -- normally takes, so the fetch has finished well before it's needed.
+    -- How many seconds of the current file must remain before its
+    -- neighbors get re-prefetched near the end (see the time-remaining
+    -- observer below) - the main trigger is immediate, on file-loaded;
+    -- this is just a refresh for long videos. Comfortably more than a
+    -- yt-dlp resolution normally takes.
     lead_time = 20,
     -- Must match bin/ytdl-cache-wrapper's own TTL_MINUTES env var (a
     -- script-opts value can't reach into that separate shell process -
-    -- see README.md) so a fetch started right at the lead-time boundary
-    -- of a long video doesn't go stale before actually being used.
-    ttl_minutes = 20,
+    -- see README.md). Neighbors are prefetched immediately on file-load,
+    -- not just shortly before they're needed, so this has to comfortably
+    -- outlast how long a video might play before the user actually skips
+    -- - real YouTube stream URLs stay valid for about 6 hours, so this
+    -- has a lot of room without any real risk of serving an expired one.
+    ttl_minutes = 60,
     cache_dir = "~/.cache/mpv/ytdl-prefetch",
 }
 options.read_options(opts, "ytdl_prefetch")
@@ -196,42 +201,72 @@ local function prefetch(url)
     end)
 end
 
--- Observes time-remaining rather than a fixed per-file timer, so this
--- naturally adapts to both short and long videos instead of misfiring on
--- either. Fires repeatedly while under threshold; prefetch()'s own
--- in-flight/freshness checks make that a cheap no-op after the first
--- call.
-mp.observe_property("time-remaining", "number", function(_, remaining)
-    if not remaining or remaining > opts.lead_time then
-        return
-    end
-
+-- Prefetches both playlist neighbors of the current position - the user
+-- can jump forward or backward at any point during playback, not just
+-- near the end, so both directions need covering, not just "next".
+-- Either offset that's out of playlist bounds (mp.get_property returning
+-- nil for it) is silently skipped.
+local function prefetch_neighbors()
     local pos = mp.get_property_number("playlist-pos", -1)
     if pos < 0 then
         return
     end
 
+    local prev_url = mp.get_property("playlist/" .. (pos - 1) .. "/filename")
+    if prev_url then
+        prefetch(prev_url)
+    end
+
     local next_url = mp.get_property("playlist/" .. (pos + 1) .. "/filename")
     if next_url then
         prefetch(next_url)
     end
-end)
+end
 
--- Bounds in_flight's size across a long session - once the current file
--- actually changes, whatever was tracked for the previous file's "next
--- item" no longer needs remembering (a stale entry here would only ever
--- cause a harmless extra cache_key recomputation, never wrong behavior,
--- but there's no reason to let this grow unbounded over hours of
--- playback either).
+-- Fires immediately on every file change, covering an early N/P press
+-- before the current item is anywhere near over - the main gap this was
+-- missing initially (only prefetched "next", only once nearly done).
+-- Resets in_flight first: once the current file actually changes,
+-- whatever was tracked for the previous file's neighbors no longer needs
+-- remembering (a stale entry here would only ever cause a harmless extra
+-- cache_key recomputation, never wrong behavior, but there's no reason to
+-- let this grow unbounded over hours of playback either) - done before
+-- prefetch_neighbors() so this file's own prefetches aren't immediately
+-- wiped out by the reset.
 mp.register_event("file-loaded", function()
     in_flight = {}
+    prefetch_neighbors()
 end)
 
-mp.register_script_message("ytdl-prefetch-now", function()
-    local pos = mp.get_property_number("playlist-pos", -1)
-    if pos < 0 then return end
-    local next_url = mp.get_property("playlist/" .. (pos + 1) .. "/filename")
-    if next_url then
-        prefetch(next_url)
+-- Also re-triggers whenever the playlist grows - covers items added
+-- while something's already playing (mpv-add, ctrl+v/paste-url, etc.),
+-- the normal way items actually end up in the queue. Without this, an
+-- item added as the new "next" after file-loaded already fired for the
+-- current file would never get prefetched at all until some later,
+-- unrelated file transition happened to trigger a fresh check - confirmed
+-- missing in testing (a freshly mpv-add'd next item sat completely
+-- unprefetched). Only reacts to growth, not shrinkage - removing an item
+-- doesn't change what needs prefetching.
+local prev_playlist_count = 0
+mp.observe_property("playlist-count", "number", function(_, count)
+    count = count or 0
+    if count > prev_playlist_count then
+        prefetch_neighbors()
     end
+    prev_playlist_count = count
 end)
+
+-- Also re-triggers near the end of a long video: the file-loaded prefetch
+-- above may have gone stale (past ttl_minutes) by the time the current
+-- item is actually about to finish, if the user watched most of a long
+-- video before letting it play through rather than skipping early.
+-- prefetch()'s own in-flight/freshness checks make this a cheap no-op
+-- when nothing needs refreshing.
+mp.observe_property("time-remaining", "number", function(_, remaining)
+    if not remaining or remaining > opts.lead_time then
+        return
+    end
+    prefetch_neighbors()
+end)
+
+mp.register_script_message("ytdl-prefetch-now", prefetch_neighbors)

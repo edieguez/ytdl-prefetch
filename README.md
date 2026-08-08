@@ -16,19 +16,33 @@ resolved by the youtube-dl wrapper, and it won't."
 
 ## How it works
 
-- **`scripts/ytdl_prefetch.lua`** watches the currently-playing item's
-  `time-remaining`. Once it drops below a threshold (default 20s), it
-  resolves the *next* playlist item's yt-dlp JSON in the background
-  (`mp.command_native_async`, never blocks playback) and writes it to a
-  cache file.
+- **`scripts/ytdl_prefetch.lua`** resolves *both* playlist neighbors of
+  whatever's currently playing - `playlist-pos - 1` and `playlist-pos +
+  1` - in the background (`mp.command_native_async`, never blocks
+  playback), and writes the results to cache files. Three triggers, all
+  calling the same neighbor-prefetch check:
+  - **Immediately** when a file starts (`file-loaded`) - not "wait until
+    the current item is nearly over": jumping to the next or previous
+    item can happen at any point during playback, not just near the end.
+  - **Whenever the playlist grows** (`playlist-count` increasing) - an
+    item added while something's already playing (`mpv-add`,
+    `ctrl+v`/paste-url, etc. - the normal way items end up in the queue)
+    would otherwise never get prefetched at all, since `file-loaded`
+    already fired before it existed.
+  - **Near the end of a long video** (`time-remaining` under a threshold,
+    default 20s) as a refresh, in case an earlier prefetch has gone stale
+    by then.
 - **`bin/ytdl-cache-wrapper`** stands in for the real `yt-dlp` binary via
   `ytdl_hook`'s own `ytdl_path` option. When `ytdl_hook` actually tries to
-  load that item for real, it invokes this wrapper instead of `yt-dlp`
+  load an item for real, it invokes this wrapper instead of `yt-dlp`
   directly; if a fresh matching cache entry exists, it's served instantly
   instead of running a real (multi-second) `yt-dlp` subprocess. Anything
-  not prefetched - a cache miss, an expired entry, backward navigation,
+  not prefetched - a cache miss, an expired entry, a non-adjacent jump,
   a non-`ytdl_hook` file - falls straight through to a real `yt-dlp` call,
-  identical to `ytdl_hook`'s behavior without this plugin at all.
+  identical to `ytdl_hook`'s behavior without this plugin at all. The
+  wrapper itself has no concept of "next" or "previous" - it just serves
+  whatever's cached under a given request's hash, so it needed no changes
+  to support prefetching backward as well as forward.
 
 Deliberately **does not** touch, fork, or reimplement any of
 `ytdl_hook.lua`'s own format-selection/EDL-construction logic (which this
@@ -74,10 +88,14 @@ defaults already match and nothing needs coordinating.
 
 ## Limitations
 
-- Only prefetches the immediate next item (`playlist-pos + 1`) - backward
-  navigation, non-sequential jumps, and `--shuffle` order aren't
-  predicted, so they fall back to normal (uncached) resolution. This is
-  never a correctness issue, only a missed optimization.
-- A prefetch started right before a skip is wasted work (the fetch still
-  completes and gets cached, just never used before its TTL expires) -
-  harmless, just a background `yt-dlp` call that didn't end up mattering.
+- Only prefetches the immediate neighbors (`playlist-pos - 1` and
+  `playlist-pos + 1`) - jumping to an arbitrary, non-adjacent item (e.g.
+  picking something from the interactive playlist) or `--shuffle` order
+  isn't predicted, so it falls back to normal (uncached) resolution.
+  Prefetching the entire playlist isn't practical. This is never a
+  correctness issue, only a missed optimization.
+- A prefetch that never ends up used (e.g. the user keeps watching
+  forward past several items instead of jumping) is wasted work - the
+  fetch still completes and gets cached, just never gets read before its
+  TTL expires. Harmless, just a background `yt-dlp` call that didn't end
+  up mattering.

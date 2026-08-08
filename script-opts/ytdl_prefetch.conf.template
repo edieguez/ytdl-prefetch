@@ -6,15 +6,22 @@
 
 #enabled=yes
 
-# Seconds of the current file remaining before the next playlist item's
-# yt-dlp resolution gets kicked off in the background. Should comfortably
-# exceed how long a yt-dlp resolution normally takes.
+# Both playlist neighbors of the current item are prefetched immediately
+# on file-load (covers an early N/P press). This is just for the
+# near-the-end refresh on long videos: seconds of the current file
+# remaining before its neighbors get re-prefetched, in case the
+# file-loaded prefetch has gone stale by then. Should comfortably exceed
+# how long a yt-dlp resolution normally takes.
 #lead_time=20
 
 # Must match bin/ytdl-cache-wrapper's own TTL (YTDL_PREFETCH_TTL_MINUTES,
-# or its hardcoded 20-minute default if that's unset) - this file can't
+# or its hardcoded 60-minute default if that's unset) - this file can't
 # reach into that separate shell process's environment, so if you change
-# one, change the other too.
-#ttl_minutes=20
+# one, change the other too. Neighbors are prefetched immediately on
+# file-load, not just shortly before they're needed, so this has to
+# comfortably outlast how long a video might play before the user
+# actually skips - real YouTube stream URLs stay valid for about 6 hours,
+# so this has a lot of room.
+#ttl_minutes=60
 
 #cache_dir=~/.cache/mpv/ytdl-prefetch
