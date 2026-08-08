@@ -1,0 +1,42 @@
+#!/bin/sh
+# plugins/ytdl-prefetch/bin/ytdl-cache-wrapper
+#
+# Stands in for the real yt-dlp binary via mpv's ytdl_hook `ytdl_path`
+# option (see script-opts/ytdl_hook.conf in the mpv config) - ytdl_hook
+# invokes this with the exact same argv it would give real yt-dlp.
+#
+# If scripts/ytdl_prefetch.lua has already resolved this same request in
+# the background while the previous playlist item was still playing (see
+# there for the matching cache-key computation), and the result is still
+# fresh, this serves it instantly instead of spawning a real yt-dlp
+# subprocess - that's the entire speedup. Any other case (nothing
+# prefetched, a stale entry, a still-in-progress write) falls straight
+# through to a real yt-dlp call, i.e. today's exact behavior with zero
+# regression risk.
+#
+# Requires yt-dlp itself to be reachable - see REAL_YTDL below.
+set -eu
+
+CACHE_DIR="${YTDL_PREFETCH_CACHE_DIR:-$HOME/.cache/mpv/ytdl-prefetch}"
+TTL_MINUTES="${YTDL_PREFETCH_TTL_MINUTES:-20}"
+REAL_YTDL="${YTDL_PREFETCH_REAL_YTDL:-yt-dlp}"
+
+# Cache key: a checksum of the FULL argument list (not just the URL),
+# NUL-delimited so no argument can bleed into its neighbor. If
+# ytdl-format/ytdl-raw-options ever differ from what was prefetched, this
+# hashes differently - so a mismatched entry is never served, it's always
+# either an exact-match hit or a clean miss. Uses `cksum` specifically
+# (POSIX-specified, present on both the BSD tools this ships on and
+# GNU/Linux) rather than shasum/md5/sha256sum, whose availability and
+# flags vary more across platforms - scripts/ytdl_prefetch.lua computes
+# this identically, so both sides always agree on where a given request's
+# result lives.
+key=$(printf '%s\0' "$@" | cksum | awk '{print $1"-"$2}')
+cache_file="$CACHE_DIR/$key.json"
+
+if [ -f "$cache_file" ] && [ -n "$(find "$cache_file" -mmin "-$TTL_MINUTES" 2>/dev/null)" ]; then
+    cat "$cache_file"
+    exit 0
+fi
+
+exec "$REAL_YTDL" "$@"

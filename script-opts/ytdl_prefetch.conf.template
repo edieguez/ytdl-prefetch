@@ -1,0 +1,20 @@
+# ytdl_prefetch.lua options
+#
+# Copy this file to ~/.config/mpv/script-opts/ytdl_prefetch.conf and
+# uncomment/edit as needed. mpv only reads the top-level script-opts/ dir,
+# never the copy inside plugins/ - this file just documents the defaults.
+
+#enabled=yes
+
+# Seconds of the current file remaining before the next playlist item's
+# yt-dlp resolution gets kicked off in the background. Should comfortably
+# exceed how long a yt-dlp resolution normally takes.
+#lead_time=20
+
+# Must match bin/ytdl-cache-wrapper's own TTL (YTDL_PREFETCH_TTL_MINUTES,
+# or its hardcoded 20-minute default if that's unset) - this file can't
+# reach into that separate shell process's environment, so if you change
+# one, change the other too.
+#ttl_minutes=20
+
+#cache_dir=~/.cache/mpv/ytdl-prefetch
