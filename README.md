@@ -29,9 +29,17 @@ resolved by the youtube-dl wrapper, and it won't."
     `ctrl+v`/paste-url, etc. - the normal way items end up in the queue)
     would otherwise never get prefetched at all, since `file-loaded`
     already fired before it existed.
-  - **Near the end of a long video** (`time-remaining` under a threshold,
-    default 20s) as a refresh, in case an earlier prefetch has gone stale
-    by then.
+  - **Near the end of a long video**, as a refresh in case an earlier
+    prefetch has gone stale by then - a single one-shot timer scheduled
+    from `file-loaded` (`duration - lead_time`, default 20s before the
+    end), not a continuous property watch. That distinction matters: an
+    earlier version used a `time-remaining` property observer instead,
+    which fired many times a second for the entire tail of every video:
+    each call was individually cheap, but concentrating that much
+    repeated polling in exactly the one part of playback with the least
+    buffering slack to absorb scheduling interference caused audible
+    audio crackling near the end of every video. The one-shot timer gives
+    the same refresh outcome with zero repeated-polling overhead.
 - **`bin/ytdl-cache-wrapper`** stands in for the real `yt-dlp` binary via
   `ytdl_hook`'s own `ytdl_path` option. When `ytdl_hook` actually tries to
   load an item for real, it invokes this wrapper instead of `yt-dlp`

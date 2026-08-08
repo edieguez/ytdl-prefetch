@@ -19,11 +19,11 @@ local msg = require "mp.msg"
 
 local opts = {
     enabled = true,
-    -- How many seconds of the current file must remain before its
-    -- neighbors get re-prefetched near the end (see the time-remaining
-    -- observer below) - the main trigger is immediate, on file-loaded;
-    -- this is just a refresh for long videos. Comfortably more than a
-    -- yt-dlp resolution normally takes.
+    -- How many seconds before the end of a long file its neighbors get
+    -- re-prefetched, as a one-shot timer (see the file-loaded handler
+    -- below) - the main trigger is immediate, on file-loaded; this is
+    -- just a refresh for long videos. Comfortably more than a yt-dlp
+    -- resolution normally takes.
     lead_time = 20,
     -- Must match bin/ytdl-cache-wrapper's own TTL_MINUTES env var (a
     -- script-opts value can't reach into that separate shell process -
@@ -123,11 +123,13 @@ end
 -- any blocking work (not just before the async yt-dlp call) - confirmed
 -- empirically that mpv's synchronous subprocess call (used by
 -- cache_key() below) yields back to the event loop while waiting rather
--- than fully blocking script execution, so the time-remaining observer
--- firing again mid-cache_key-call is genuinely reentrant: without
+-- than fully blocking script execution, so a second trigger firing
+-- mid-cache_key-call is genuinely reentrant: this was originally found
+-- with a since-removed continuous time-remaining observer, where without
 -- claiming in_flight immediately, dozens of redundant cksum subprocesses
--- got spawned every second for the same URL during the lead-time window
--- before the first one had even finished.
+-- got spawned every second for the same URL before the first one had
+-- even finished - kept as a general guard since the same reentrancy is
+-- possible from any trigger, not just that one.
 local in_flight = {}
 
 local function is_fresh(cache_file)
@@ -233,9 +235,33 @@ end
 -- let this grow unbounded over hours of playback either) - done before
 -- prefetch_neighbors() so this file's own prefetches aren't immediately
 -- wiped out by the reset.
+--
+-- Also schedules a single one-shot refresh near the end of a long video
+-- (see refresh_timer below), replacing what used to be a continuous
+-- time-remaining property observer. That observer fired many times a
+-- second for the entire tail of every video (confirmed: ~50 invocations
+-- over a ~7-8 second window in earlier testing) - each call individually
+-- cheap (in_flight short-circuits it once nothing needs refreshing), but
+-- concentrating that much repeated polling in exactly the one part of
+-- playback with the least buffering slack to absorb any scheduling
+-- interference turned out to be the prime suspect for reported audio
+-- crackling near the end of every video. A single timer, firing once,
+-- removes that repeated-polling pattern entirely while keeping the same
+-- refresh outcome.
+local refresh_timer = nil
+
 mp.register_event("file-loaded", function()
     in_flight = {}
     prefetch_neighbors()
+
+    if refresh_timer then
+        refresh_timer:kill()
+        refresh_timer = nil
+    end
+    local duration = mp.get_property_number("duration", 0)
+    if duration > opts.lead_time then
+        refresh_timer = mp.add_timeout(duration - opts.lead_time, prefetch_neighbors)
+    end
 end)
 
 -- Also re-triggers whenever the playlist grows - covers items added
@@ -254,19 +280,6 @@ mp.observe_property("playlist-count", "number", function(_, count)
         prefetch_neighbors()
     end
     prev_playlist_count = count
-end)
-
--- Also re-triggers near the end of a long video: the file-loaded prefetch
--- above may have gone stale (past ttl_minutes) by the time the current
--- item is actually about to finish, if the user watched most of a long
--- video before letting it play through rather than skipping early.
--- prefetch()'s own in-flight/freshness checks make this a cheap no-op
--- when nothing needs refreshing.
-mp.observe_property("time-remaining", "number", function(_, remaining)
-    if not remaining or remaining > opts.lead_time then
-        return
-    end
-    prefetch_neighbors()
 end)
 
 mp.register_script_message("ytdl-prefetch-now", prefetch_neighbors)
