@@ -264,22 +264,45 @@ mp.register_event("file-loaded", function()
     end
 end)
 
--- Also re-triggers whenever the playlist grows - covers items added
--- while something's already playing (mpv-add, ctrl+v/paste-url, etc.),
--- the normal way items actually end up in the queue. Without this, an
--- item added as the new "next" after file-loaded already fired for the
--- current file would never get prefetched at all until some later,
--- unrelated file transition happened to trigger a fresh check - confirmed
--- missing in testing (a freshly mpv-add'd next item sat completely
--- unprefetched). Only reacts to growth, not shrinkage - removing an item
--- doesn't change what needs prefetching.
-local prev_playlist_count = 0
-mp.observe_property("playlist-count", "number", function(_, count)
-    count = count or 0
-    if count > prev_playlist_count then
-        prefetch_neighbors()
-    end
-    prev_playlist_count = count
+-- Also re-triggers on any playlist mutation - covers an item added while
+-- something's already playing (mpv-add, ctrl+v/paste-url, etc., the
+-- normal way items actually end up in the queue), which would otherwise
+-- never get prefetched since file-loaded already fired before it existed.
+--
+-- Deliberately observes mpv's built-in "playlist" property natively
+-- rather than "playlist-count" (which only reacts to growth) or
+-- "playlist-pos" (which a reorder doesn't always change - e.g. swapping
+-- the two items *around* the current one leaves its own index the same)
+-- - since "playlist" already changes on every mutation regardless of what
+-- caused it.
+--
+-- Suspended for the duration of playlist-manager's "moving" mode (via the
+-- ytdl-prefetch-suspend/-resume messages below) rather than left running
+-- through it. That mode is keyboard-driven and non-atomic: a single
+-- logical N-step move issues N independent playlist-move commands, each
+-- mutating this property on its own, so left unsuspended this fired once
+-- per keystroke for whatever pair happened to be transiently adjacent at
+-- that instant - previously (incorrectly) documented here as "harmless"
+-- on the theory that in_flight/is_fresh below absorb it, but those guard
+-- repeated calls for the *same* URL, not the genuinely distinct URL pairs
+-- a multi-step reorder cycles through, so real yt-dlp subprocesses were
+-- being spawned for arrangements that stopped being adjacent moments
+-- later. Only this raw observer is gated: file-loaded above and the
+-- explicit "ytdl-prefetch-now" message below both reflect a real, settled
+-- transition or an explicit request, and must never be suppressed.
+local prefetch_suspended = false
+
+mp.register_script_message("ytdl-prefetch-suspend", function()
+    prefetch_suspended = true
+end)
+
+mp.register_script_message("ytdl-prefetch-resume", function()
+    prefetch_suspended = false
+end)
+
+mp.observe_property("playlist", "native", function()
+    if prefetch_suspended then return end
+    prefetch_neighbors()
 end)
 
 mp.register_script_message("ytdl-prefetch-now", prefetch_neighbors)

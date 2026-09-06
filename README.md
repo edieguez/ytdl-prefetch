@@ -24,11 +24,21 @@ resolved by the youtube-dl wrapper, and it won't."
   - **Immediately** when a file starts (`file-loaded`) - not "wait until
     the current item is nearly over": jumping to the next or previous
     item can happen at any point during playback, not just near the end.
-  - **Whenever the playlist grows** (`playlist-count` increasing) - an
-    item added while something's already playing (`mpv-add`,
-    `ctrl+v`/paste-url, etc. - the normal way items end up in the queue)
-    would otherwise never get prefetched at all, since `file-loaded`
-    already fired before it existed.
+  - **Whenever the playlist changes** (observing the built-in `playlist`
+    property) - covers an item added while something's already playing
+    (`mpv-add`, `ctrl+v`/paste-url, etc. - the normal way items end up in
+    the queue), which would otherwise never get prefetched since
+    `file-loaded` already fired before it existed. Suspended for the
+    duration of `playlist-manager`'s "moving" mode (see below) - that
+    mode's keyboard-driven reordering issues one `playlist-move` per
+    keystroke, so left unsuspended this would fire a real prefetch attempt
+    for every transient in-between arrangement, not just the one the user
+    actually settles on.
+  - **An explicit `ytdl-prefetch-now` script-message.** `playlist-manager`
+    sends this (immediately after `ytdl-prefetch-resume`, see below) once
+    a reorder is committed or cancelled, so the settled position gets
+    exactly one accurate prefetch check. Any other script can send the
+    same message to force an immediate check on demand.
   - **Near the end of a long video**, as a refresh in case an earlier
     prefetch has gone stale by then - a single one-shot timer scheduled
     from `file-loaded` (`duration - lead_time`, default 20s before the
@@ -51,6 +61,20 @@ resolved by the youtube-dl wrapper, and it won't."
   wrapper itself has no concept of "next" or "previous" - it just serves
   whatever's cached under a given request's hash, so it needed no changes
   to support prefetching backward as well as forward.
+
+## Script-message interface
+
+- `ytdl-prefetch-suspend` / `ytdl-prefetch-resume` - pause/resume the
+  playlist-mutation observer above. Used by `playlist-manager` to cover
+  its non-atomic, multi-step reorder gesture as a single unit instead of
+  reacting to every intermediate step.
+- `ytdl-prefetch-now` - forces an immediate neighbor-prefetch check,
+  regardless of suspend state. Used by `playlist-manager` right after
+  `ytdl-prefetch-resume` to get one accurate check of the final,
+  settled position.
+
+Harmless no-ops if this script isn't installed - mpv silently drops a
+script-message with no registered handler.
 
 Deliberately **does not** touch, fork, or reimplement any of
 `ytdl_hook.lua`'s own format-selection/EDL-construction logic (which this
